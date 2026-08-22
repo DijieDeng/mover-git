@@ -19,7 +19,11 @@ Mover Git is a Python and Tkinter desktop utility that previews and moves files 
 
 ## Screenshot
 
-A screenshot is not currently included. The application opens directly into the working file selection and preview interface.
+<p align="center">
+  <img src="./docs/images/screenshot.png"
+       alt="Git Mover screenshot"
+       width="900">
+</p>
 
 ## Workflow
 
