@@ -1,350 +1,121 @@
-# File Mover + Git Push
+# Mover Git
 
-A Python desktop application for moving files into a Git repository and automatically committing and pushing them to a remote repository.
+[![CI](https://github.com/quangshuynh/mover-git/actions/workflows/ci.yml/badge.svg)](https://github.com/quangshuynh/mover-git/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-The application provides a Tkinter GUI for scanning files before moving them, identifying files that exceed size limits, splitting transfers into manageable batches, optionally organizing photos and videos by date, and tracking Git push progress.
+Mover Git is a Python and Tkinter desktop utility that previews and moves files into an existing Git repository, then commits and pushes them in size-limited batches. It is designed for controlled archival workflows where file placement, hosting limits, and unrelated Git changes need to remain visible.
 
 ## Features
 
-* Graphical interface built with Tkinter
-* Select a source folder and destination Git repository
-* Optionally select a subfolder inside the repository
-* Scan and preview files before moving them
-* Skip files larger than **100 MB**
-* Split files into batches of up to **2 GB**
-* Commit and push each batch separately
-* Optionally move everything first and create a single commit
-* Preserve empty directories when possible
-* Display valid files, skipped files, batches, and Git logs
-* Track files and data pushed
-* Automatically detect the repository's GitHub URL
-* Optional photo and video organization
+- previews source files, destination paths, skipped files, and batch assignments before moving anything
+- skips symbolic links, unreadable files, and individual files larger than 100 MB
+- creates batches no larger than 2 GB while preserving file order
+- optionally organizes supported photos and videos by date and timestamp
+- avoids destination filename collisions without overwriting existing files
+- blocks moves when the destination repository already has staged, unstaged, or untracked changes
+- stages only files moved by the current operation
+- keeps the interface responsive and reports progress, status, and Git output
+
+## Screenshot
+
+A screenshot is not currently included. The application opens directly into the working file selection and preview interface.
+
+## Workflow
+
+1. Select a source directory.
+2. Select an existing local Git repository and an optional subfolder within it.
+3. Configure batching, commit, and media organization options.
+4. Scan and review the valid, skipped, and batch preview tabs.
+5. Start the move and confirm the destructive operation.
+6. Review move, commit, and push progress in the log.
+
+Mover Git moves files rather than copying them. Keep backups of important source data and review every preview before confirming.
+
+## Safety
+
+The application validates paths, nesting, repository state, symbolic links, size limits, and destination collisions. Git staging uses explicit repository-relative pathspecs for files moved by Mover Git. It does not run `git add .`, reset unrelated work, or clean the repository.
+
+A Git or filesystem failure is reported in the application log. Files moved before a later Git failure remain in the destination so they can be recovered and committed manually.
 
 ## Media Organization
 
-The application can optionally organize supported media files using their date information.
+Supported extensions are `.jpg`, `.jpeg`, `.png`, `.heic`, `.mp4`, `.mov`, `.avi`, and `.aae`, matched without regard to case. Images use available EXIF capture dates and otherwise fall back to filesystem modification time. Other supported files use modification time.
 
-Supported media types:
+Media can be placed in `YYYY-MM-DD` folders and renamed as `YYYY-MM-DD HH_MM_SS.ext`. Numeric suffixes are added when timestamps collide.
 
-```text
-.jpg
-.jpeg
-.png
-.heic
-.mp4
-.mov
-.avi
-.aae
-```
+## Limits
 
-When media organization is enabled, the application can:
+| Limit | Value |
+| --- | ---: |
+| Maximum individual file | 100 MB |
+| Maximum Git batch | 2 GB |
 
-* Place files into `YYYY-MM-DD` folders
-* Rename files using timestamps
-* Use image EXIF metadata when available
-* Fall back to the file modification time when necessary
-* Automatically avoid filename collisions
+These are application limits, not guarantees that a Git hosting provider will accept a push. GitHub normally blocks files larger than 100 MiB and recommends Git LFS for large binary assets. Mover Git does not configure Git LFS, retry network failures, or provide transactional rollback.
 
-Example:
+## Installation
 
-```text
-Source
-└── IMG_1234.JPG
-
-Destination
-└── 2026-08-21
-    └── 2026-08-21 14_32_10.JPG
-```
-
-## Requirements
-
-* Python 3
-* Git
-* Tkinter
-* Pillow
-* pillow-heif
-
-OpenCV is optional and is used for supported video handling when installed.
-
-Install the Python dependencies with:
+Requirements are Python 3.10 or newer with Tkinter, Git on `PATH`, and an existing destination repository with an `origin` remote and configured authentication.
 
 ```bash
-pip install Pillow pillow-heif opencv-python
+python -m venv .venv
+python -m pip install -e .
 ```
 
-If you do not need the optional OpenCV functionality, you can install only:
-
-```bash
-pip install Pillow pillow-heif
-```
-
-Git must also be installed and available from the command line:
-
-```bash
-git --version
-```
-
-## Repository Setup
-
-The destination folder must already be a Git repository.
-
-For example:
-
-```bash
-git clone <repository-url>
-cd <repository-name>
-```
-
-Alternatively, initialize a repository manually:
-
-```bash
-mkdir my-repository
-cd my-repository
-git init
-git remote add origin <repository-url>
-```
-
-Make sure authentication with the remote Git provider is configured before using the application.
+Activate the environment first using `.venv\Scripts\Activate.ps1` on Windows or `source .venv/bin/activate` on macOS and Linux. OpenCV remains available as an optional dependency through `python -m pip install -e ".[video]"`.
 
 ## Usage
 
-Run the application:
+Run the actual application entry point:
 
 ```bash
-python main.py
+python app.py
 ```
 
-Replace `main.py` with the actual filename of the program if it has a different name.
+The destination repository must be clean before a move. Mover Git commits each batch separately by default and pushes the selected branch to `origin`. Disabling per-batch commits moves all valid files first and creates one commit.
 
-### 1. Select the Source Folder
+## Development
 
-Click **Browse** next to **Source folder** and select the directory containing the files you want to move.
-
-### 2. Select the Destination Repository
-
-Click **Browse** next to **Destination repo folder** and select an existing local Git repository.
-
-The selected directory must contain a `.git` directory.
-
-### 3. Choose a Destination Subfolder
-
-Optionally select a folder inside the Git repository.
-
-If no subfolder is selected, files are moved into the repository root.
-
-### 4. Configure Git Options
-
-You can configure:
-
-**Commit prefix**
-
-Adds custom text to automatically generated commit messages.
-
-**Branch**
-
-The branch pushed to the `origin` remote. The default is:
-
-```text
-main
-```
-
-**Commit/push after each 2 GB batch**
-
-When enabled, every batch is committed and pushed before processing the next batch.
-
-**Recreate empty directories when possible**
-
-Attempts to preserve empty directories from the source structure.
-
-### 5. Configure Media Organization
-
-Enable **Organize media by date taken / modified** to activate media organization.
-
-Additional options allow you to:
-
-* Create `YYYY-MM-DD` folders
-* Rename media using timestamps
-* Restrict organization to supported media formats
-
-### 6. Scan and Preview
-
-Click:
-
-```text
-1) Scan and Preview
-```
-
-The application scans the source directory and displays:
-
-* Valid files
-* Skipped files
-* Destination paths
-* Batch assignments
-* Total file sizes
-* Number of required Git batches
-
-No files are moved during the scan.
-
-### 7. Move and Push
-
-After reviewing the preview, click:
-
-```text
-2) Move + Git Push
-```
-
-The application asks for confirmation before modifying files.
-
-It then:
-
-1. Creates applicable destination directories.
-2. Moves files into the repository.
-3. Runs `git add .`.
-4. Creates a commit.
-5. Pushes the commit to the configured branch.
-6. Repeats the process for additional batches when necessary.
-
-Progress is displayed in the application while processing.
-
-## File Size Limits
-
-The application uses the following limits:
-
-| Limit                   |   Size |
-| ----------------------- | -----: |
-| Maximum individual file | 100 MB |
-| Maximum batch           |   2 GB |
-
-Files larger than 100 MB are skipped and displayed in the **Skipped files** tab.
-
-> This application does not automatically configure Git LFS for files exceeding normal Git hosting limits.
-
-## Commit Messages
-
-Commit messages are generated automatically.
-
-Example:
-
-```text
-[08][21][2026] [14:32:10] update - 125 files - 842.31 MB
-```
-
-When multiple batches are required, later commits receive a batch number.
-
-For example:
-
-```text
-[08][21][2026] [14:32:10] update - 125 files - 842.31 MB
-[08][21][2026] [14:40:22] update 2 - 98 files - 1.72 GB
-```
-
-A custom commit prefix can replace `update`.
-
-## Git Commands
-
-The application automatically performs the equivalent of:
+Install development dependencies and run the same checks used by CI:
 
 ```bash
-git status --short
-git add .
-git status --short
-git commit -m "<generated commit message>"
-git push -u origin <branch>
+python -m pip install -e ".[dev]"
+ruff check .
+pytest
 ```
 
-If no Git changes are detected after staging, the commit and push are skipped.
-
-## Safety Checks
-
-Before moving files, the application verifies that:
-
-* The source directory exists
-* The destination directory exists
-* The destination is a Git repository
-* The selected subfolder remains inside the repository
-* The source is not inside the destination
-* The destination is not inside the source
-
-Symlinks are skipped during scanning.
-
-The application also provides a preview before files are moved and asks for confirmation before starting the move and Git operations.
-
-## Important
-
-This application **moves** files rather than copying them.
-
-After a successful move, the original files will no longer remain in their original locations.
-
-Back up important files before using the application.
-
-Git operations can also modify and push other uncommitted changes already present in the selected repository because the application uses:
-
-```bash
-git add .
-```
-
-For that reason, it is recommended to start with a clean Git working tree.
+Tests use temporary directories and pure helpers. They do not open Tkinter windows, access a network, use Git credentials, or push to a remote.
 
 ## Project Structure
 
-A minimal project could look like:
-
 ```text
-file-mover-git/
-├── main.py
-├── README.md
-└── requirements.txt
+mover-git/
+|-- .github/workflows/ci.yml
+|-- mover_git/
+|   |-- __init__.py
+|   |-- core.py
+|   |-- git.py
+|   `-- media.py
+|-- tests/
+|   |-- test_core.py
+|   |-- test_git.py
+|   `-- test_media.py
+|-- app.py
+|-- pyproject.toml
+|-- LICENSE
+`-- README.md
 ```
 
-Example `requirements.txt`:
+`app.py` owns the Tkinter interface and background workflow. `mover_git.core` contains path validation, batching, sizes, and commit messages. `mover_git.media` contains media recognition, timestamps, and collision-safe destination naming. `mover_git.git` contains remote parsing and safe staging path helpers.
 
-```text
-Pillow
-pillow-heif
-opencv-python
-```
+## Limitations
 
-If OpenCV is not needed:
+- no automatic Git LFS setup
+- no rollback across completed file moves or commits
+- no automatic conflict resolution or push retry
+- no remote creation or credential management
+- empty directories are not represented by Git unless they contain a tracked placeholder
 
-```text
-Pillow
-pillow-heif
-```
+## License
 
-## Troubleshooting
-
-### "Not a Git repo"
-
-The destination directory does not contain a `.git` folder.
-
-Clone or initialize the repository before selecting it.
-
-### Git push fails
-
-Verify:
-
-* Git is installed
-* The repository has an `origin` remote
-* The configured branch exists or can be created
-* Your Git credentials or SSH keys are configured
-* You have permission to push to the remote repository
-
-Check the application's **Log** tab for the Git error message.
-
-### Files are skipped
-
-Files larger than 100 MB are intentionally skipped. Symlinks and unreadable files are also skipped.
-
-Check the **Skipped files** tab for the reason.
-
-### Media has the wrong date
-
-For supported images, the application attempts to read EXIF date metadata. If usable metadata cannot be found, it falls back to the file's modification time.
-
-Video files also fall back to their filesystem modification time.
-
-## Disclaimer
-
-File and Git operations can result in data loss if used incorrectly.
-
-Review the scan preview, maintain backups of important files, and verify the destination repository before starting a move.
+Released under the [MIT License](LICENSE).

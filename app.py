@@ -2,45 +2,39 @@ import os
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
+import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from urllib.parse import urlparse
-
-from PIL import Image
-from PIL.ExifTags import TAGS
 
 from pillow_heif import register_heif_opener
+
+from mover_git.core import (
+    MAX_FILE_SIZE_BYTES,
+    FileEntry,
+    human_size,
+    make_batches,
+    make_commit_message,
+    validate_paths,
+)
+from mover_git.git import normalize_github_url, repo_relative_paths
+from mover_git.media import (
+    MEDIA_FILE_TYPES,
+    build_target_path,
+    get_media_datetime,
+    is_supported_media,
+    sanitize_timestamp_filename,
+)
+
 register_heif_opener()
-
-try:
-    import cv2
-except Exception:
-    cv2 = None
-
-
-MAX_FILE_SIZE_BYTES = 100 * 1024 * 1024          # 100 MB
-MAX_BATCH_SIZE_BYTES = 2 * 1024 * 1024 * 1024    # 2 GB
-
-MEDIA_FILE_TYPES = ('.jpg', '.jpeg', '.png', '.heic', '.mp4', '.mov', '.avi', '.aae')
-
-
-@dataclass
-class FileEntry:
-    src_path: Path
-    rel_path: Path
-    size: int
 
 
 class FileMoverGitApp:
     def __init__(self, root: tk.Tk) -> None:
         """
-        Initialize the application and create all variables needed by the program
-        :param root: Main Tkinter window for the application
-        :return: None
-        :exception: None
+        initialize the application and create its state
+        :param root: main Tkinter window for the application
+        :returns: nothing
         """
         self.root = root
         self.root.title("File Mover + Git Push")
@@ -75,15 +69,15 @@ class FileMoverGitApp:
         # current batch progress
         self.current_batch_files = 0
         self.current_batch_total = 0
+        self.is_busy = False
 
         self._build_ui()
 
 
     def _build_ui(self) -> None:
         """
-        Create and arrange all graphical interface widgets for the application
-        :return: None
-        :exception: None
+        create and arrange all graphical interface widgets for the application
+        :returns: nothing
         """
         outer = ttk.Frame(self.root, padding=12)
         outer.pack(fill="both", expand=True)
@@ -162,8 +156,10 @@ class FileMoverGitApp:
         buttons_frame = ttk.Frame(outer)
         buttons_frame.pack(fill="x", pady=(10, 0))
 
-        ttk.Button(buttons_frame, text="1) Scan and Preview", command=self.scan_in_thread).pack(side="left", padx=(0, 8))
-        ttk.Button(buttons_frame, text="2) Move + Git Push", command=self.move_in_thread).pack(side="left", padx=8)
+        self.scan_button = ttk.Button(buttons_frame, text="1) Scan and Preview", command=self.scan_in_thread)
+        self.scan_button.pack(side="left", padx=(0, 8))
+        self.move_button = ttk.Button(buttons_frame, text="2) Move + Git Push", command=self.move_in_thread)
+        self.move_button.pack(side="left", padx=8)
         ttk.Button(buttons_frame, text="Clear Log", command=self.clear_log).pack(side="left", padx=8)
         ttk.Button(buttons_frame, text="Show GitHub Link", command=self.show_github_link).pack(side="left", padx=8)
 
@@ -191,6 +187,15 @@ class FileMoverGitApp:
             font=("Segoe UI", 10, "bold")
         )
         self.progress_label.grid(row=0,column=1,sticky="ne",padx=(30,0))
+        self.progress_bar = ttk.Progressbar(summary_frame, mode="determinate", maximum=100)
+        self.progress_bar.pack(fill="x", pady=(8, 0))
+        self.status_label = ttk.Label(
+            summary_frame,
+            text="Status: Ready",
+            anchor="w",
+            font=("Segoe UI", 10, "bold"),
+        )
+        self.status_label.pack(fill="x", pady=(6, 0))
 
         preview_frame = ttk.LabelFrame(outer, text="Preview", padding=10)
         preview_frame.pack(fill="both", expand=True, pady=(10, 0))
@@ -206,11 +211,10 @@ class FileMoverGitApp:
 
     def _make_text_tab(self, notebook: ttk.Notebook, title: str) -> tk.Text:
         """
-        Create a new text tab with a vertical scrollbar
-        :param notebook: Notebook widget that will contain the new tab
-        :param title: Title displayed on the new tab
-        :return: Text widget created for the tab
-        :exception: None
+        create a new text tab with a vertical scrollbar
+        :param notebook: notebook widget that will contain the new tab
+        :param title: title displayed on the new tab
+        :returns: text widget created for the tab
         """
         frame = ttk.Frame(notebook)
         notebook.add(frame, text=title)
@@ -226,12 +230,15 @@ class FileMoverGitApp:
 
     def log(self, message: str) -> None:
         """
-        Display a message in the log tab
-        :param message: Message to display in the log
-        :return: None
-        :exception: None
+        display a message in the log tab
+        :param message: message to display in the log
+        :returns: nothing
         """
         def _log():
+            """
+            insert one message on the interface thread
+        :returns: nothing
+            """
             self.log_text.insert("end", message + "\n")
             self.log_text.see("end")
         self.root.after(0, _log)
@@ -239,18 +246,16 @@ class FileMoverGitApp:
 
     def clear_log(self) -> None:
         """
-        Remove all messages from the log tab
-        :return: None
-        :exception: None
+        remove all messages from the log tab
+        :returns: nothing
         """
         self.ui(self.log_text.delete, "1.0", "end")
 
 
     def pick_source(self) -> None:
         """
-        Open a dialog to select the source folder
-        :return: None
-        :exception: None
+        open a dialog to select the source folder
+        :returns: nothing
         """
         folder = filedialog.askdirectory(title="Select source folder")
         if folder:
@@ -259,9 +264,8 @@ class FileMoverGitApp:
 
     def pick_dest(self) -> None:
         """
-        Open a dialog to select the destination repository folder
-        :return: None
-        :exception: None
+        open a dialog to select the destination repository folder
+        :returns: nothing
         """
         folder = filedialog.askdirectory(title="Select destination repo folder")
         if folder:
@@ -270,9 +274,8 @@ class FileMoverGitApp:
 
     def pick_dest_subfolder(self) -> None:
         """
-        Open a dialog to select a subfolder inside the destination repository
-        :return: None
-        :exception: ValueError If the selected folder is not inside the destination repository
+        open a dialog to select a subfolder inside the destination repository
+        :returns: nothing
         """
         repo_root = self.dest_var.get().strip()
         if not repo_root:
@@ -290,80 +293,89 @@ class FileMoverGitApp:
 
     def scan_in_thread(self) -> None:
         """
-        Start the scan process in a background thread
-        :return: None
-        :exception: None
+        start the scan process in a background thread
+        :returns: nothing
         """
-        threading.Thread(target=self.scan_and_preview, daemon=True).start()
+        if self.is_busy:
+            return
+        self.set_busy(True, "Scanning")
+        threading.Thread(target=self._scan_worker, daemon=True).start()
 
 
     def move_in_thread(self) -> None:
         """
-        Start the move and push process in a background thread
-        :return: None
-        :exception: None
+        start the move and push process in a background thread
+        :returns: nothing
         """
-        threading.Thread(target=self.move_and_push, daemon=True).start()
+        if self.is_busy:
+            return
+        self.set_busy(True, "Moving files")
+        threading.Thread(target=self._move_worker, daemon=True).start()
+
+    def _scan_worker(self) -> None:
+        """
+        run a scan and restore the idle interface state
+        :returns: nothing
+        """
+        try:
+            self.scan_and_preview()
+        finally:
+            self.set_busy(False, "Scan complete")
+
+    def _move_worker(self) -> None:
+        """
+        run a move operation and restore the idle interface state
+        :returns: nothing
+        """
+        try:
+            self.move_and_push()
+        finally:
+            self.set_busy(False)
+
+    def set_busy(self, busy: bool, status: str | None = None) -> None:
+        """
+        update action availability and status text
+        :param busy: whether a background operation is active
+        :param status: optional status text to display
+        :returns: nothing
+        """
+        self.is_busy = busy
+        state = "disabled" if busy else "normal"
+        self.ui(self.scan_button.configure, state=state)
+        self.ui(self.move_button.configure, state=state)
+        if status is not None:
+            self.set_status(status)
+
+    def set_status(self, status: str) -> None:
+        """
+        display the current application operation
+        :param status: status text to display
+        :returns: nothing
+        """
+        self.ui(self.status_label.configure, text=f"Status: {status}")
+        self.ui(self.root.title, f"File Mover + Git Push | {status}")
 
 
     def validate_paths(self) -> tuple[Path, Path, Path] | None:
         """
-        Validate the selected source destination and subfolder paths
-        :return: Tuple containing the validated source repository and destination paths or None if validation fails
-        :exception: OSError If a path cannot be resolved
-        :exception: ValueError If a path is outside the destination repository
+        validate the selected source destination and subfolder paths
+        :returns: tuple containing validated source repository and destination paths or None
         """
-        src = Path(self.source_var.get().strip())
-        repo_root = Path(self.dest_var.get().strip())
-        subfolder_text = self.dest_subfolder_var.get().strip()
-
-        if not src.exists() or not src.is_dir():
-            self.show_error("Invalid source", "Please choose a valid source folder.")
-            return None
-
-        if not repo_root.exists() or not repo_root.is_dir():
-            self.show_error("Invalid destination", "Please choose a valid destination folder.")
-            return None
-
-        git_dir = repo_root / ".git"
-        if not git_dir.exists() or not git_dir.is_dir():
-            self.show_error("Not a Git repo", "Destination folder must already contain a .git folder.")
-            return None
-
         try:
-            dest_subfolder = (repo_root / subfolder_text).resolve() if subfolder_text else repo_root.resolve()
-        except OSError as exc:
-            self.show_error("Invalid subfolder", f"Could not resolve subfolder: {exc}")
+            return validate_paths(
+                Path(self.source_var.get().strip()),
+                Path(self.dest_var.get().strip()),
+                self.dest_subfolder_var.get().strip(),
+            )
+        except (OSError, ValueError) as exc:
+            self.show_error("Invalid folders", str(exc))
             return None
-
-        try:
-            dest_subfolder.relative_to(repo_root.resolve())
-        except ValueError:
-            self.show_error("Invalid subfolder", "Subfolder must stay inside the destination repo.")
-            return None
-
-        try:
-            src.resolve().relative_to(dest_subfolder)
-            self.show_error("Invalid folders", "Source folder cannot be inside destination target folder.")
-            return None
-        except ValueError:
-            pass
-
-        try:
-            dest_subfolder.relative_to(src.resolve())
-            self.show_error("Invalid folders", "Destination target folder cannot be inside source folder.")
-            return None
-        except ValueError:
-            pass
-
-        return src, repo_root, dest_subfolder
 
 
     def scan_and_preview(self) -> None:
         """
-        Scan the source folder organize valid files create batches and update the preview
-        :return: None
-        :exception: None
+        scan the source folder organize valid files create batches and update the preview
+        :returns: nothing
         """
         validated = self.validate_paths()
         if not validated:
@@ -383,7 +395,7 @@ class FileMoverGitApp:
         self.log("Scanning source folder...")
 
         all_dirs = set()
-        for root_dir, dirnames, filenames in os.walk(src):
+        for root_dir, _dirnames, filenames in os.walk(src):
             root_path = Path(root_dir)
             rel_dir = root_path.relative_to(src)
             all_dirs.add(rel_dir)
@@ -413,7 +425,7 @@ class FileMoverGitApp:
 
         self.valid_files.sort(key=lambda e: str(e.rel_path).lower())
         self.skipped_files.sort(key=lambda x: str(x[0]).lower())
-        self.batches = self.make_batches(self.valid_files)
+        self.batches = make_batches(self.valid_files)
 
         self.write_preview(all_dirs, dst)
         self.log("Scan complete.")
@@ -428,13 +440,16 @@ class FileMoverGitApp:
         self.update_progress()
 
 
-    def update_progress(self):
+    def update_progress(self) -> None:
         """
-        Update the progress information displayed in the application
-        :return: None
-        :exception: None
+        update the progress information displayed in the application
+        :returns: nothing
         """
         def _update():
+            """
+            refresh progress widgets on the interface thread
+            :returns: nothing
+            """
             self.progress_label.config(
                 text=(
                     f"Batch: {self.current_batch}/{self.total_batches}\n"
@@ -445,55 +460,36 @@ class FileMoverGitApp:
                     f"{self.human_size(self.total_valid_size)}"
                 )
             )
+            total = len(self.valid_files)
+            self.progress_bar.configure(value=(self.total_files_pushed / total * 100) if total else 0)
 
         self.root.after(0, _update)
 
 
     def make_batches(self, files: list[FileEntry]) -> list[list[FileEntry]]:
         """
-        Divide valid files into batches that do not exceed the maximum batch size
-        :param files: List of valid files to organize into batches
-        :return: List of file batches
-        :exception: None
+        divide valid files into batches that do not exceed the maximum batch size
+        :param files: list of valid files to organize into batches
+        :returns: list of file batches
         """
-        batches: list[list[FileEntry]] = []
-        current_batch: list[FileEntry] = []
-        current_size = 0
-
-        for entry in files:
-            if entry.size > MAX_BATCH_SIZE_BYTES:
-                continue
-
-            if current_batch and current_size + entry.size > MAX_BATCH_SIZE_BYTES:
-                batches.append(current_batch)
-                current_batch = []
-                current_size = 0
-
-            current_batch.append(entry)
-            current_size += entry.size
-
-        if current_batch:
-            batches.append(current_batch)
-
-        return batches
+        return make_batches(files)
 
 
     def write_preview(self, all_dirs: set[Path], dst: Path) -> None:
         """
-        Display preview information for valid files skipped files batches and summary
-        :param all_dirs: Set of discovered directories from the source folder
-        :param dst: Destination folder for preview paths
-        :return: None
-        :exception: None
+        display preview information for valid files skipped files batches and summary
+        :param all_dirs: set of discovered directories from the source folder
+        :param dst: destination folder for preview paths
+        :returns: nothing
         """
         used_preview_paths: set[Path] = set()
+        preview_paths = {
+            entry.src_path: self.build_target_path_preview(dst, entry, used_preview_paths)
+            for entry in self.valid_files
+        }
         valid_lines = []
         for entry in self.valid_files:
-            target_preview = self.build_target_path_preview(
-                dst,
-                entry,
-                used_preview_paths,
-            )
+            target_preview = preview_paths[entry.src_path]
             valid_lines.append(
                 f"{entry.rel_path}  ->  {target_preview.relative_to(dst) if target_preview.is_relative_to(dst) else target_preview}  |  {self.human_size(entry.size)}"
             )
@@ -519,11 +515,7 @@ class FileMoverGitApp:
             batch_size = sum(x.size for x in batch)
             batch_lines.append(f"Batch {i}: {len(batch)} files, {self.human_size(batch_size)}")
             for entry in batch:
-                target_preview = self.build_target_path_preview(
-                    dst,
-                    entry,
-                    used_preview_paths,
-                )
+                target_preview = preview_paths[entry.src_path]
                 shown_target = target_preview.relative_to(dst) if target_preview.is_relative_to(dst) else target_preview
                 batch_lines.append(
                     f"    {entry.rel_path}  ->  {shown_target}  |  {self.human_size(entry.size)}"
@@ -560,146 +552,66 @@ class FileMoverGitApp:
     @staticmethod
     def is_supported_media(path: Path) -> bool:
         """
-        Determine whether a file is a supported media type
-        :param path: File path to check
-        :return: True if the file is a supported media type otherwise False
-        :exception: None
+        determine whether a file is a supported media type
+        :param path: file path to check
+        :returns: whether the file is a supported media type
         """
-        return path.suffix.lower() in MEDIA_FILE_TYPES
+        return is_supported_media(path)
 
 
     @staticmethod
     def sanitize_timestamp_filename(dt: datetime) -> str:
         """
-        Format a datetime value into a filename safe timestamp
-        :param dt: Datetime value to format
-        :return: Formatted timestamp string
-        :exception: None
+        format a datetime value into a filename safe timestamp
+        :param dt: datetime value to format
+        :returns: formatted timestamp string
         """
-        return dt.strftime("%Y-%m-%d %H_%M_%S")
+        return sanitize_timestamp_filename(dt)
 
 
     def get_media_datetime(self, file_path: Path) -> datetime:
         """
-        Retrieve the date and time associated with a media file
-        :param file_path: Path to the media file
-        :return: Datetime associated with the media file
-        :exception: None
+        retrieve the date and time associated with a media file
+        :param file_path: path to the media file
+        :returns: datetime associated with the media file
         """
-        try:
-            ext = file_path.suffix.lower()
-
-            if ext in ('.jpg', '.jpeg', '.png', '.heic'):
-                with Image.open(file_path) as image:
-                    exif = image.getexif()
-
-                    for field in ("DateTimeOriginal", "DateTimeDigitized", "DateTime"):
-                        for tag, value in exif.items():
-                            if TAGS.get(tag) == field:
-                                return datetime.strptime(value, "%Y:%m:%d %H:%M:%S")
-
-            elif ext in ('.mp4', '.mov', '.avi') and cv2 is not None:
-                # OpenCV is optional here; still falls back to modified time.
-                vid = cv2.VideoCapture(str(file_path))
-                if vid is not None:
-                    vid.release()
-                return datetime.fromtimestamp(file_path.stat().st_mtime)
-
-        except Exception:
-            pass
-
-        return datetime.fromtimestamp(file_path.stat().st_mtime)
+        return get_media_datetime(file_path)
 
 
     def build_target_path(self, dst: Path, entry: FileEntry, used_paths: set[Path],) -> Path:
         """
-        Build the destination path for a file while avoiding filename conflicts
-        :param dst: Destination folder
-        :param entry: File entry being processed
-        :param used_paths: Set of destination paths already assigned
-        :return: Final destination path for the file
-        :exception: None
+        build the destination path for a file while avoiding filename conflicts
+        :param dst: destination folder
+        :param entry: file entry being processed
+        :param used_paths: set of destination paths already assigned
+        :returns: final destination path for the file
         """
-        original_target = dst / entry.rel_path
-
-        if not self.organize_media_var.get():
-            return original_target
-
-        if self.media_only_for_supported_types_var.get() and not self.is_supported_media(entry.src_path):
-            return original_target
-
-        dt_taken = self.get_media_datetime(entry.src_path)
-
-        if self.media_use_date_folder_var.get():
-            subfolder = dst / dt_taken.strftime("%Y-%m-%d")
-        else:
-            subfolder = original_target.parent
-
-        if self.media_rename_to_timestamp_var.get():
-            filename_base = self.sanitize_timestamp_filename(dt_taken)
-            candidate = subfolder / f"{filename_base}{entry.src_path.suffix}"
-        else:
-            candidate = subfolder / entry.src_path.name
-
-        final_target = candidate
-        counter = 1
-
-        while final_target.exists() or final_target in used_paths:
-            final_target = subfolder / f"{candidate.stem}_{counter}{candidate.suffix}"
-            counter += 1
-
-        used_paths.add(final_target)
-        return final_target
+        return build_target_path(
+            dst, entry.src_path, entry.rel_path, used_paths,
+            self.organize_media_var.get(),
+            self.media_only_for_supported_types_var.get(),
+            self.media_use_date_folder_var.get(),
+            self.media_rename_to_timestamp_var.get(),
+        )
 
 
     def build_target_path_preview(self, dst: Path, entry: FileEntry, used_paths: set[Path]) -> Path:
         """
-        Build a preview destination path that matches the move logic
-        :param dst: Destination folder
-        :param entry: File entry being processed
-        :param used_paths: Set of preview paths already assigned
-        :return: Preview destination path for the file
-        :exception: None
+        build a preview destination path that matches the move logic
+        :param dst: destination folder
+        :param entry: file entry being processed
+        :param used_paths: set of preview paths already assigned
+        :returns: preview destination path for the file
         """
-        original_target = dst / entry.rel_path
-
-        if not self.organize_media_var.get():
-            return original_target
-
-        if self.media_only_for_supported_types_var.get() and not self.is_supported_media(entry.src_path):
-            return original_target
-
-        dt_taken = self.get_media_datetime(entry.src_path)
-
-        if self.media_use_date_folder_var.get():
-            subfolder = dst / dt_taken.strftime("%Y-%m-%d")
-        else:
-            subfolder = original_target.parent
-
-        if self.media_rename_to_timestamp_var.get():
-            filename_base = self.sanitize_timestamp_filename(dt_taken)
-            candidate = subfolder / f"{filename_base}{entry.src_path.suffix}"
-        else:
-            candidate = subfolder / entry.src_path.name
-
-        final_target = candidate
-        counter = 1
-
-        while final_target.exists() or final_target in used_paths:
-            final_target = subfolder / f"{candidate.stem}_{counter}{candidate.suffix}"
-            counter += 1
-
-        used_paths.add(final_target)
-        return final_target
+        return self.build_target_path(dst, entry, used_paths)
     
 
     def show_info(self, title, message):
         """
-        Display an informational message dialog
-        :param title: Title of the dialog
-        :param message: Message displayed in the dialog
-        :return: None
-        :exception: None
+        display an informational message dialog
+        :param title: title of the dialog
+        :param message: message displayed in the dialog
+        :returns: nothing
         """
         self.root.after(
             0,
@@ -709,11 +621,10 @@ class FileMoverGitApp:
 
     def show_error(self, title, message):
         """
-        Display an error message dialog
-        :param title: Title of the dialog
-        :param message: Message displayed in the dialog
-        :return: None
-        :exception: None
+        display an error message dialog
+        :param title: title of the dialog
+        :param message: message displayed in the dialog
+        :returns: nothing
         """
         self.root.after(
             0,
@@ -723,16 +634,19 @@ class FileMoverGitApp:
 
     def ask_yes_no(self, title, message):
         """
-        Display a confirmation dialog and return the user response
-        :param title: Title of the dialog
-        :param message: Message displayed in the dialog
-        :return: Boolean indicating the user response
-        :exception: None
+        display a confirmation dialog and return the user response
+        :param title: title of the dialog
+        :param message: message displayed in the dialog
+        :returns: boolean indicating the user response
         """
         result = []
         event = threading.Event()
 
         def ask():
+            """
+            display confirmation on the interface thread
+            :returns: nothing
+            """
             result.append(messagebox.askyesno(title, message))
             event.set()
 
@@ -744,13 +658,13 @@ class FileMoverGitApp:
 
     def move_and_push(self) -> None:
         """
-        Move files to the destination repository and perform Git operations
-        :return: None
-        :exception: FileExistsError If a destination file already exists
-        :exception: Exception If an unexpected error occurs during processing
+        move files to the destination repository and perform Git operations
+        :returns: nothing
         """
+        self.set_status("Validating folders and repository")
         validated = self.validate_paths()
         if not validated:
+            self.set_status("Validation failed")
             return
         src, repo_root, dst = validated
 
@@ -759,13 +673,28 @@ class FileMoverGitApp:
             self.scan_and_preview()
             if not self.valid_files:
                 self.log("Nothing to move.")
+                self.set_status("No files to move")
                 return
+
+        self.set_status("Checking Git repository status")
+        existing_status = self.run_command(
+            ["git", "status", "--porcelain"], repo_root, capture_output=True
+        )
+        if existing_status.strip():
+            self.log("Destination repository has pre-existing changes; move cancelled.")
+            self.show_error(
+                "Repository has changes",
+                "Commit, stash, or remove existing repository changes before moving files.",
+            )
+            self.set_status("Move cancelled because the repository has changes")
+            return
 
         confirm = self.ask_yes_no(
             "Confirm move",
             "This will move valid files to the destination repo and run git add/commit/push. Continue?",
         )
         if not confirm:
+            self.set_status("Move cancelled")
             return
         
         # init progress variables
@@ -787,7 +716,9 @@ class FileMoverGitApp:
 
             if self.commit_each_batch_var.get():
                 for batch_index, batch in enumerate(self.batches, start=1):
+                    self.set_status(f"Moving files in batch {batch_index} of {len(self.batches)}")
                     used_move_paths = set()
+                    moved_paths: list[Path] = []
                     # progress update for current batch
                     self.current_batch = batch_index
                     self.current_batch_files = 0
@@ -808,6 +739,7 @@ class FileMoverGitApp:
                             )
 
                         shutil.move(str(entry.src_path), str(target_path))
+                        moved_paths.append(target_path)
                         moved_count += 1
                         moved_bytes += entry.size
 
@@ -824,7 +756,7 @@ class FileMoverGitApp:
                     self.cleanup_empty_source_dirs(src)
 
                     commit_message = self.make_commit_message(batch_index, len(self.batches), moved_count, moved_bytes)
-                    self.run_git_sequence(repo_root, commit_message)
+                    self.run_git_sequence(repo_root, commit_message, moved_paths)
                     self.update_progress()
                     self.log(f"Finished batch {batch_index}.")
                     self.current_batch = batch_index
@@ -835,8 +767,10 @@ class FileMoverGitApp:
 
                 moved_count = 0
                 moved_bytes = 0
+                moved_paths = []
 
                 for batch_index, batch in enumerate(self.batches, start=1):
+                    self.set_status(f"Moving files in batch {batch_index} of {len(self.batches)}")
                     used_move_paths = set()
                     self.current_batch = batch_index
                     self.current_batch_files = 0
@@ -854,6 +788,7 @@ class FileMoverGitApp:
                             )
 
                         shutil.move(str(entry.src_path), str(target_path))
+                        moved_paths.append(target_path)
                         moved_count += 1
                         moved_bytes += entry.size
 
@@ -867,7 +802,7 @@ class FileMoverGitApp:
 
                 self.cleanup_empty_source_dirs(src)
                 commit_message = self.make_commit_message(1, 1, moved_count, moved_bytes)
-                self.run_git_sequence(repo_root, commit_message)
+                self.run_git_sequence(repo_root, commit_message, moved_paths)
                 self.update_progress()
                 self.log("Finished single commit/push for all moved files.")
             
@@ -879,20 +814,21 @@ class FileMoverGitApp:
 
             self.update_progress()
             self.log("All batches completed successfully.")
+            self.set_status("Move, commit, and push completed")
             self.show_github_link(log_only=True)
             self.show_info("Done", "Move and git push completed.")
         except Exception as exc:
             self.log(f"ERROR: {exc}")
+            self.set_status(f"Error: {exc}")
             self.show_error("Error", str(exc))
 
 
     def create_empty_directories(self, src: Path, dst: Path) -> None:
         """
-        Recreate empty source directories in the destination folder
-        :param src: Source folder
-        :param dst: Destination folder
-        :return: None
-        :exception: None
+        recreate empty source directories in the destination folder
+        :param src: source folder
+        :param dst: destination folder
+        :returns: nothing
         """
         for root_dir, dirnames, filenames in os.walk(src):
             root_path = Path(root_dir)
@@ -905,12 +841,11 @@ class FileMoverGitApp:
 
     def cleanup_empty_source_dirs(self, src: Path) -> None:
         """
-        Remove empty directories from the source folder
-        :param src: Source folder
-        :return: None
-        :exception: None
+        remove empty directories from the source folder
+        :param src: source folder
+        :returns: nothing
         """
-        for root_dir, dirnames, filenames in os.walk(src, topdown=False):
+        for root_dir, _dirnames, _filenames in os.walk(src, topdown=False):
             root_path = Path(root_dir)
             if root_path == src:
                 continue
@@ -922,23 +857,40 @@ class FileMoverGitApp:
                 pass
 
 
-    def run_git_sequence(self, repo_path: Path, commit_message: str) -> None:
+    def run_git_sequence(
+        self, repo_path: Path, commit_message: str, moved_paths: list[Path]
+    ) -> None:
         """
-        Run the Git add commit and push commands for the repository
-        :param repo_path: Path to the Git repository
-        :param commit_message: Commit message to use
-        :return: None
-        :exception: RuntimeError If a Git command fails
+        run the Git add commit and push commands for the repository
+        :param repo_path: path to the Git repository
+        :param commit_message: commit message to use
+        :param moved_paths: paths moved by the application
+        :returns: nothing
         """
-        self.run_command(["git", "status", "--short"], repo_path)
-        self.run_command(["git", "add", "."], repo_path)
+        pathspecs = repo_relative_paths(repo_path, moved_paths)
+        if not pathspecs:
+            self.log("No moved paths to stage; skipping commit and push.")
+            self.set_status("No Git changes to commit")
+            return
+        self.set_status("Adding moved files to Git")
+        self.run_command(["git", "add", "--", *pathspecs], repo_path)
 
-        status_after_add = self.run_command(["git", "status", "--short"], repo_path, capture_output=True)
+        self.set_status("Checking staged Git changes")
+        status_after_add = self.run_command(
+            ["git", "diff", "--cached", "--name-only", "--", *pathspecs],
+            repo_path,
+            capture_output=True,
+        )
         if not status_after_add.strip():
             self.log("No git changes detected after add; skipping commit/push.")
+            self.set_status("No Git changes to commit")
             return
 
-        self.run_command(["git", "commit", "-m", commit_message], repo_path)
+        self.set_status("Committing Git changes")
+        self.run_command(
+            ["git", "commit", "-m", commit_message, "--", *pathspecs], repo_path
+        )
+        self.set_status("Pushing Git changes")
         self.run_command(
             ["git", "push", "-u", "origin", self.remote_branch_var.get().strip() or "main"],
             repo_path,
@@ -947,12 +899,11 @@ class FileMoverGitApp:
 
     def run_command(self, command: list[str], cwd: Path, capture_output: bool = False) -> str:
         """
-        Execute a command and optionally return its output
-        :param command: Command to execute
-        :param cwd: Working directory for the command
-        :param capture_output: Whether command output should be returned
-        :return: Command output or an empty string
-        :exception: RuntimeError If the command fails
+        execute a command and optionally return its output
+        :param command: command to execute
+        :param cwd: working directory for the command
+        :param capture_output: whether command output should be returned
+        :returns: command output or an empty string
         """
         self.log(f"Running: {' '.join(command)}")
         result = subprocess.run(
@@ -982,49 +933,39 @@ class FileMoverGitApp:
 
     def ui(self, func, *args, **kwargs):
         """
-        Schedule a function to run on the main user interface thread
-        :param func: Function to execute
-        :param args: Positional arguments for the function
-        :param kwargs: Keyword arguments for the function
-        :return: None
-        :exception: None
+        schedule a function to run on the main user interface thread
+        :param func: function to execute
+        :param args: positional arguments for the function
+        :param kwargs: keyword arguments for the function
+        :returns: nothing
         """
         self.root.after(0, lambda: func(*args, **kwargs))
 
 
     def make_commit_message(self, batch_index: int, total_batches: int, file_count: int, moved_bytes: int) -> str:
         """
-        Create a commit message describing the completed batch
-        :param batch_index: Current batch number
-        :param total_batches: Total number of batches
-        :param file_count: Number of files moved
-        :param moved_bytes: Total number of bytes moved
-        :return: Formatted commit message
-        :exception: None
+        create a commit message describing the completed batch
+        :param batch_index: current batch number
+        :param total_batches: total number of batches
+        :param file_count: number of files moved
+        :param moved_bytes: total number of bytes moved
+        :returns: formatted commit message
         """
-        now = datetime.now()
-        timestamp = now.strftime("[%m][%d][%Y] [%H:%M:%S]")
-        prefix = self.commit_prefix_var.get().strip()
-
-        base_message = prefix if prefix else "update"
-
-        if total_batches > 1:
-            batch_suffix = "" if batch_index == 1 else f" {batch_index}"
-        else:
-            batch_suffix = ""
-
-        final_message = f"{base_message}{batch_suffix}"
-        details = f"- {file_count} files - {self.human_size(moved_bytes)}"
-
-        return f"{timestamp} {final_message} {details}"
+        return make_commit_message(
+            self.commit_prefix_var.get(),
+            batch_index,
+            total_batches,
+            file_count,
+            moved_bytes,
+            datetime.now().strftime("[%m][%d][%Y] [%H:%M:%S]"),
+        )
 
 
     def show_github_link(self, log_only: bool = False) -> None:
         """
-        Display or log the GitHub repository link
-        :param log_only: Whether to only write the link to the log
-        :return: None
-        :exception: None
+        display or log the GitHub repository link
+        :param log_only: whether to only write the link to the log
+        :returns: nothing
         """
         validated = self.validate_paths()
         if not validated:
@@ -1051,59 +992,34 @@ class FileMoverGitApp:
     @staticmethod
     def normalize_github_url(remote_url: str) -> str | None:
         """
-        Convert a Git remote URL into a standard GitHub web address
-        :param remote_url: Git remote URL
-        :return: Normalized GitHub URL or None
-        :exception: None
+        convert a Git remote URL into a standard GitHub web address
+        :param remote_url: git remote URL
+        :returns: normalized GitHub URL or None
         """
-        remote_url = remote_url.strip()
-        if not remote_url:
-            return None
-
-        if remote_url.startswith("git@github.com:"):
-            path = remote_url.split(":", 1)[1]
-            if path.endswith(".git"):
-                path = path[:-4]
-            return f"https://github.com/{path}"
-
-        if remote_url.startswith("https://") or remote_url.startswith("http://"):
-            parsed = urlparse(remote_url)
-            if "github.com" in parsed.netloc:
-                path = parsed.path[:-4] if parsed.path.endswith(".git") else parsed.path
-                return f"https://github.com{path}"
-
-        return None
+        return normalize_github_url(remote_url)
 
 
     @staticmethod
     def human_size(size_bytes: int) -> str:
         """
-        Convert a file size into a readable string
-        :param size_bytes: File size in bytes
-        :return: Human readable file size
-        :exception: None
+        convert a file size into a readable string
+        :param size_bytes: file size in bytes
+        :returns: human readable file size
         """
-        units = ["B", "KB", "MB", "GB", "TB"]
-        size = float(size_bytes)
-        for unit in units:
-            if size < 1024 or unit == units[-1]:
-                return f"{size:.2f} {unit}"
-            size /= 1024
-        return f"{size_bytes} B"
+        return human_size(size_bytes)
         
 
 
 def main() -> None:
     """
-    Create and start the application
-    :return: None
-    :exception: None
+    create and start the application
+    :returns: nothing
     """
     root = tk.Tk()
     style = ttk.Style()
     if "vista" in style.theme_names():
         style.theme_use("vista")
-    app = FileMoverGitApp(root)
+    FileMoverGitApp(root)
     root.mainloop()
 
 # main guard
