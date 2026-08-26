@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from mover_git.core import FileEntry, human_size, make_batches, make_commit_message, validate_paths
+from mover_git.core import (
+    FileEntry,
+    human_size,
+    make_batches,
+    make_commit_message,
+    validate_destination_repo,
+    validate_paths,
+)
 
 
 def entry(name: str, size: int) -> FileEntry:
@@ -74,6 +81,74 @@ def test_validate_paths_rejects_nested_source(tmp_path: Path) -> None:
     source.mkdir()
     with pytest.raises(ValueError, match="source folder"):
         validate_paths(source, repo)
+
+
+def test_validate_paths_rejects_nonexistent_destination(tmp_path: Path) -> None:
+    """
+    verify a missing destination produces a clear error
+    :param tmp_path: temporary test directory
+        :returns: nothing
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_paths(source, tmp_path / "nope")
+
+
+def test_validate_paths_rejects_file_destination(tmp_path: Path) -> None:
+    """
+    verify a file (not directory) destination produces a clear error
+    :param tmp_path: temporary test directory
+        :returns: nothing
+    """
+    source = tmp_path / "source"
+    source.mkdir()
+    file_dest = tmp_path / "file.txt"
+    file_dest.write_text("not a directory")
+    with pytest.raises(ValueError, match="not a directory"):
+        validate_paths(source, file_dest)
+
+
+def test_validate_paths_rejects_non_git_destination(tmp_path: Path) -> None:
+    """
+    verify a directory without .git produces a clear error
+    :param tmp_path: temporary test directory
+        :returns: nothing
+    """
+    source = tmp_path / "source"
+    repo = tmp_path / "repo"
+    source.mkdir()
+    repo.mkdir()
+    assert not (repo / ".git").exists()
+    with pytest.raises(ValueError, match="not a Git repository"):
+        validate_paths(source, repo)
+
+
+def test_validate_paths_rejects_corrupted_repo(tmp_path: Path) -> None:
+    """
+    verify a repo missing .git/HEAD produces a clear corruption error
+    :param tmp_path: temporary test directory
+        :returns: nothing
+    """
+    source = tmp_path / "source"
+    repo = tmp_path / "repo"
+    source.mkdir()
+    (repo / ".git").mkdir(parents=True)
+    # deliberately do NOT create .git/HEAD
+    with pytest.raises(ValueError, match="corrupted"):
+        validate_paths(source, repo)
+
+
+def test_validate_destination_repo_accepts_worktree_git_file(tmp_path: Path) -> None:
+    """
+    verify a .git file (worktree/submodule gitdir pointer) is accepted
+    :param tmp_path: temporary test directory
+        :returns: nothing
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: /some/where/else")
+    assert validate_destination_repo(repo) == repo.resolve()
 
 
 def test_make_commit_message_adds_later_batch_number() -> None:

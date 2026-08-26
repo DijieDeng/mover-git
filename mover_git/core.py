@@ -13,7 +13,6 @@ class FileEntry:
     rel_path: Path
     size: int
 
-
 def human_size(size_bytes: int) -> str:
     """
     convert a byte count into a readable size
@@ -27,7 +26,6 @@ def human_size(size_bytes: int) -> str:
             return f"{size:.2f} {unit}"
         size /= 1024
     return f"{size_bytes} B"
-
 
 def make_batches(
     files: list[FileEntry], limit: int = MAX_BATCH_SIZE_BYTES
@@ -54,6 +52,37 @@ def make_batches(
         batches.append(current)
     return batches
 
+def validate_destination_repo(repo: Path) -> Path:
+    """
+    validate that a path points to a usable Git repository
+    :param repo: destination Git repository path
+    :returns: resolved repository path
+    :raises ValueError: when the path is not a valid Git repository
+    """
+    if not repo.exists():
+        raise ValueError(
+            f"destination repository does not exist: {repo}"
+        )
+    if not repo.is_dir():
+        raise ValueError(
+            f"destination is not a directory, so it cannot be a Git repository: {repo}"
+        )
+    git_path = repo / ".git"
+    if not git_path.exists():
+        raise ValueError(
+            f"destination folder is not a Git repository (missing .git): {repo}"
+        )
+    # A normal clone stores its metadata in a .git directory; a worktree
+    # or submodule uses a .git file (gitdir pointer) instead.  When the
+    # .git entry is a directory the HEAD ref must be present, otherwise
+    # the repository is likely corrupted.
+    if git_path.is_dir():
+        head_file = git_path / "HEAD"
+        if not head_file.exists():
+            raise ValueError(
+                f"destination Git repository appears corrupted (missing .git/HEAD): {repo}"
+            )
+    return repo.resolve()
 
 def validate_paths(source: Path, repo: Path, subfolder: str = "") -> tuple[Path, Path, Path]:
     """
@@ -65,12 +94,8 @@ def validate_paths(source: Path, repo: Path, subfolder: str = "") -> tuple[Path,
     """
     if not source.is_dir():
         raise ValueError("please choose a valid source folder")
-    if not repo.is_dir():
-        raise ValueError("please choose a valid destination folder")
-    if not (repo / ".git").exists():
-        raise ValueError("destination folder must be a Git repository")
+    repo = validate_destination_repo(repo)
     source = source.resolve()
-    repo = repo.resolve()
     target = (repo / subfolder).resolve()
     if not target.is_relative_to(repo):
         raise ValueError("subfolder must stay inside the destination repository")
@@ -79,7 +104,6 @@ def validate_paths(source: Path, repo: Path, subfolder: str = "") -> tuple[Path,
     if target.is_relative_to(source):
         raise ValueError("destination target cannot be inside the source folder")
     return source, repo, target
-
 
 def make_commit_message(
     prefix: str,
