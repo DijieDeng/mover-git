@@ -48,3 +48,31 @@ def repo_relative_paths(repo: Path, paths: list[Path]) -> list[str]:
     resolved_repo = repo.resolve()
     result = {path.resolve().relative_to(resolved_repo).as_posix() for path in paths}
     return sorted(result)
+
+
+def validate_destination_repo(dest: Path) -> Path:
+    """
+    validate that a destination path is a usable Git repository
+
+    Detects common invalid destination states early and raises a
+    ValueError with a clear, user-facing message so the workflow
+    does not continue to a later Git operation that would fail.
+
+    :param dest: candidate destination repository directory
+    :returns: resolved destination directory if valid
+    :raises ValueError: with a descriptive message for each failure case
+    """
+    if not dest.exists():
+        raise ValueError(
+            f"destination repository does not exist: {dest}"
+        )
+    if not dest.is_dir():
+        raise ValueError(
+            f"destination path is not a directory: {dest}"
+        )
+    if not (dest / ".git").exists():
+        raise ValueError(
+            f"destination directory is not a Git repository "
+            f"(no .git folder found): {dest}"
+        )
+    return dest.resolve()
